@@ -1,8 +1,10 @@
 # gpufand
 
 ----
+
 Written by Claude (Anthropic). I take the responsibility for the code and hold the intellectual
 property rights. The credit however goes to Claude, deservedly - Grigor Gatchev.
+
 ----
 
 A ~300-line C daemon that runs a fan curve on an NVIDIA card keyed to the **memory-junction
