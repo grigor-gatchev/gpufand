@@ -1,0 +1,21 @@
+# /etc/systemd/system/gpufand.service
+# install:  sudo cp gpufand /usr/local/sbin/ && sudo cp gpufand.service /etc/systemd/system/
+#           sudo systemctl daemon-reload && sudo systemctl enable --now gpufand
+# adjust:   edit ExecStart's --mem/--core curves, then: sudo systemctl restart gpufand
+# status:   systemctl status gpufand ; journalctl -u gpufand -n 20
+[Unit]
+Description=NVIDIA fan curve keyed to GDDR6X memory temperature
+After=multi-user.target
+# the NVIDIA driver must be loaded; if the service starts too early, Restart= covers it
+
+[Service]
+Type=simple
+ExecStart=/usr/local/sbin/gpufand --quiet --mem 70:40,80:52,88:62,94:72,100:85 --core 50:38,60:48,68:60,75:72,85:85
+Restart=on-failure
+RestartSec=5
+# SIGTERM → the daemon hands the fans back to the driver before exiting
+KillSignal=SIGTERM
+TimeoutStopSec=10
+
+[Install]
+WantedBy=multi-user.target
