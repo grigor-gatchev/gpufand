@@ -20,9 +20,11 @@ cards and which is usually the hottest thing on the board. The core temperature 
   there, MIT) — but via `/sys/bus/pci/devices/<addr>/resource0`, which needs no `iomem=relaxed`
   kernel parameter. `/dev/mem` is the fallback.
 * Needs root (both halves). Works headless; no X, no Coolbits.
-* Fails safe: on SIGINT/SIGTERM, on an NVML write error, or after 10 consecutive failed
-  temperature reads, it hands the fans back to the driver. If it is killed outright, the driver's
-  curve resumes on its own, because the override only persists while something keeps writing it.
+* Hands back carefully: on SIGINT/SIGTERM/SIGHUP, `--stop`, during `--pause`, on an NVML write
+  error, or after 10 consecutive failed temperature reads, it returns the fans to the driver.
+  **A manual fan speed set through NVML persists until handed back** — it does not lapse when the
+  setter dies — so after an unclean exit (SIGKILL, crash, suspend) run `sudo gpufand --reset`, and
+  run the daemon as a service with `Restart=on-failure` so a crashed controller is replaced at once.
 
 ## Build and try
 
@@ -41,6 +43,7 @@ Only one daemon runs per machine (an flock on `/run/gpufand.pid`). While it runs
     sudo gpufand --pause                        ... until --resume
     sudo gpufand --resume
     sudo gpufand --stop                         graceful exit, fans handed back
+    sudo gpufand --reset                        hand the fans back now (no daemon needed)
 
 A bare `sudo gpufand` while one is running prints its status and does not start another.
 If the memory sensor cannot be read, the start-up message says why (not root, locked-down

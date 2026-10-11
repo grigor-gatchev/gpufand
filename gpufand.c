@@ -24,16 +24,19 @@
  *   sudo gpufand --pause [SECONDS]     hand the fans back to the driver (for a while)
  *   sudo gpufand --resume              take them back
  *   sudo gpufand --stop                exit gracefully (fans handed back)
+ *   sudo gpufand --reset               no daemon needed: hand the fans back to the driver now
  *   sudo gpufand --once                one reading, no daemon needed, fans untouched
  *
  * The device table and the register decode are taken from gddr6
  * (https://github.com/olealgoritme/gddr6, MIT licence) — credit to its authors;
  * the mistakes in this file are mine.
  *
- * Safety: the override is only held while this process keeps writing it; if the
- * process dies, the driver's own curve resumes. On SIGINT/SIGTERM/--stop, during
- * a pause, on an NVML write error, and after MAX_READ_FAILURES consecutive failed
- * reads, control is handed back to the driver explicitly.
+ * Safety: a manual fan speed set through NVML PERSISTS until control is handed
+ * back explicitly — it does not lapse when the setter dies. So the daemon hands
+ * back on SIGINT/SIGTERM/SIGHUP/--stop, during a pause, on an NVML write error,
+ * and after MAX_READ_FAILURES consecutive failed reads; and `gpufand --reset`
+ * hands back after an unclean exit (SIGKILL, crash, suspend). Run it as a
+ * systemd service with Restart=on-failure so a crashed controller is replaced.
  */
 #define _GNU_SOURCE
 #include <dlfcn.h>
@@ -341,7 +344,8 @@ static void usage(const char *a0)
            "  --status           show temperatures, fan, curves, pause state\n"
            "  --pause [SECONDS]  hand the fans back to the driver, indefinitely or for a while\n"
            "  --resume           take them back\n"
-           "  --stop             exit gracefully (fans handed back)\n", a0);
+           "  --stop             exit gracefully (fans handed back)\n"
+           "  --reset            hand the fans back to the driver now (after an unclean exit; no daemon needed)\n", a0);
 }
 
 static void format_status(char *out, size_t n, const struct settings *s, unsigned core, int mem,
@@ -369,7 +373,7 @@ int main(int argc, char **argv)
     int nset = apply_settings(&st, argc - 1, argv + 1, consumed + 1);
     if (nset < 0) { fprintf(stderr, "bad curve or limits (curves: increasing °C:fan%% pairs, fan 0..100)\n"); return 2; }
 
-    unsigned int gpu = 0; int once = 0, quiet = 0, want_status = 0, want_pause = 0, want_resume = 0, want_stop = 0;
+    unsigned int gpu = 0; int once = 0, quiet = 0, want_status = 0, want_pause = 0, want_resume = 0, want_stop = 0, want_reset = 0;
     long pause_secs = 0;
     for (int i = 1; i < argc; i++) {
         if (consumed[i]) continue;
@@ -380,8 +384,24 @@ int main(int argc, char **argv)
         else if (!strcmp(a, "--status")) want_status = 1;
         else if (!strcmp(a, "--resume")) want_resume = 1;
         else if (!strcmp(a, "--stop"))   want_stop = 1;
+        else if (!strcmp(a, "--reset"))  want_reset = 1;
         else if (!strcmp(a, "--pause"))  { want_pause = 1; if (v && v[0] != '-') { pause_secs = atol(v); i++; } }
         else { usage(argv[0]); return !!strcmp(a, "--help") && !!strcmp(a, "-h"); }
+    }
+
+    /* ---- --reset: hand the fans back, daemon or no daemon ---- */
+    if (want_reset) {
+        int probe = control_connect();
+        if (probe >= 0) { close(probe); fprintf(stderr, "a daemon is running; stopping it hands the fans back:\n"); return control_send("stop"); }
+        if (nvml_load()) return 1;
+        nvmlReturn_t r = p_nvmlInit(); if (r) { fprintf(stderr, "nvmlInit: %s\n", p_ErrorString(r)); return 1; }
+        if ((r = p_GetHandle(gpu, &g_dev))) { fprintf(stderr, "no GPU %u: %s\n", gpu, p_ErrorString(r)); return 1; }
+        if ((r = p_GetNumFans(g_dev, &g_nfans))) { fprintf(stderr, "fans: %s\n", p_ErrorString(r)); return 1; }
+        int bad = 0;
+        for (unsigned int i = 0; i < g_nfans; i++)
+            if ((r = p_SetDefaultFan(g_dev, i))) { fprintf(stderr, "fan %u: %s%s\n", i, p_ErrorString(r), geteuid() ? " (needs root)" : ""); bad = 1; }
+        if (!bad) printf("fan control returned to the driver (%u fan%s)\n", g_nfans, g_nfans == 1 ? "" : "s");
+        p_nvmlShutdown(); return bad;
     }
 
     /* ---- client mode: a daemon is already running ---- */
